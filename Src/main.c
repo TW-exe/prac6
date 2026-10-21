@@ -19,78 +19,101 @@
 #include <stdint.h>
 #define STM32G474xx
 #include "stm32g4xx.h"
-#include "adc.h" // New Header
+#include "adc.h"
 #include "kobuki.h"
-
 #include "uart.h"
-#include "ultrasonic.h" // New Header
+#include "ultrasonic.h"
 
-#define BUTTON_0_START     0x01U // Confirm the values from my_kobuki
-#define BUTTON_1_STOP      0x02U // Confirm the values from my_kobuki
-#define BUTTON_2_ROTATE    0x04U // Confirm the values from my_kobuki
+/* Kobuki button values */
+#define BUTTON_0_START  0x01U
+#define BUTTON_1_STOP   0x02U
+#define BUTTON_2_ROTATE 0x04U
 
-#define DRIVE_SPEED_MM_S   ((int16_t)100)
-#define ROTATE_SPEED_MM_S  ((int16_t)100)
+// Logic
+#define NULL 0
+#define TRUE 1
 
-static void Send_Kobuki_Move(int16_t speed, int16_t radius)
-{
-    uint8_t payload[6];
+// States
+static enum {
+    IDLE,
+    SEARCH,
+    OBSTACLE,
+    AVOID,
+    OBJECT
+} state;
 
-    payload[0] = 0x01U; /* Base Control sub-packet ID. */
-    payload[1] = 0x04U; /* Speed and radius occupy four bytes. */
-    payload[2] = (uint8_t)(speed & 0xFF);
-    payload[3] = (uint8_t)((uint16_t)speed >> 8);
-    payload[4] = (uint8_t)(radius & 0xFF);
-    payload[5] = (uint8_t)((uint16_t)radius >> 8);
-
-    Kobuki_Tx(payload, sizeof(payload));
-}
-
-int main(void)
-{
-    Kobuki_Typedef my_kobuki = {0};
-    US_Typedef ultrasonic_object = {0};
-
-    uint8_t is_running = 0U;
-    uint8_t is_rotating = 0U;
-
+int main(void) {
+    // Both of these only for testing purposes. Not required 
+    volatile uint16_t ultrasonic_read = 0; // Zeroed variables to ensure defined behaviour
+    volatile uint16_t adc_read = 0; // Zeroed variables to ensure defined behaviour
+    
+    Kobuki_Typedef kobuki = {0}; // Zeroed structs to ensure defined behaviour 
+    US_Typedef object = {0}; // Zeroed structs to ensure defined behaviour
+    Kobuki_LED_Enum led_1, led_2;
+    
     UART_Init();
-    ADC_Init();
+    ADC_Init(); // Has to be executed before Ultrasonic Init, because Ultrasonic subroutine uses ADC subroutine
     Ultrasonic_Init();
-
-    Send_Kobuki_Move(0, 0);
-
+    
+    //Initial assigning of all ENUMS
+    state = IDLE;
+    led_1 = OFF;
+    led_2 = OFF;
+    
     while (1) {
-        Kobuki_Read(&my_kobuki);
-        Ultrasonic_Detect(&ultrasonic_object);
-
-        /* Button 0 selects forward motion when the path is clear. */
-        if (((my_kobuki.button & BUTTON_0_START) != 0U) &&
-            (ultrasonic_object.detected == 0U)) {
-            is_running = 1U;
-            is_rotating = 0U;
+        Kobuki_Read(&kobuki);
+        Ultrasonic_Detect(&object);
+        
+        // Both of these only for testing purposes. Not required
+        ultrasonic_read = Ultrasonic_Read();
+        adc_read = ADC_Read(ADC_CHANNEL_1);
+        
+        Kobuki_Update_LEDs(led_1, led_2);
+        
+        // A TEST FSM
+        switch (state) {
+            case IDLE:
+                if (kobuki.button == BUTTON_0_START) {
+                    state = SEARCH;
+                    led_1 = RED;
+                    Kobuki_Rotate_Angle_Setpoint(kobuki.angle, 450);
+                    // Kobuki_Drive_Distance_Setpoint(kobuki.distance, 100);
+                } else if (kobuki.button == BUTTON_1_STOP) {
+                    state = SEARCH;
+                    led_1 = RED;
+                    Kobuki_Rotate_Angle_Setpoint(kobuki.angle, 270);
+                    // Kobuki_Drive_Distance_Setpoint(kobuki.distance, -100);
+                } else if (kobuki.button == BUTTON_2_ROTATE) {
+                    state = SEARCH;
+                    led_1 = RED;
+                    Kobuki_Rotate_Angle_Setpoint(kobuki.angle, 90);
+                    // Kobuki_Drive_Distance_Setpoint(kobuki.distance, 1000);
+                } else {
+                    Kobuki_Drive(STOP);
+                }
+                break;
+                
+            case SEARCH:
+                if ((kobuki.wheeldrop != NULL) ||
+                    ((kobuki.bumper + kobuki.cliff) != NULL) ||
+                    (kobuki.rotation_complete == TRUE) ||
+                    (kobuki.distance_complete == TRUE)) {
+                    state = IDLE;
+                    led_1 = YELLOW;
+                } else {
+                    Kobuki_Rotate_Angle(kobuki.angle);
+                    // Kobuki_Drive_Distance(kobuki.distance);
+                }
+                break;
+                
+            case OBSTACLE:
+                break;
+                
+            case AVOID:
+                break;
+                
+            case OBJECT:
+                break;
         }
-
-        /* Button 2 selects rotation when the path is clear. */
-        else if (((my_kobuki.button & BUTTON_2_ROTATE) != 0U) &&
-                (ultrasonic_object.detected == 0U)) {
-            is_rotating = 1U;
-            is_running = 0U;
-        }
-
-        /* Button 1, bumper or ultrasonic detection stops the robot. */
-        if (((my_kobuki.button & BUTTON_1_STOP) != 0U) ||
-            (my_kobuki.bumper != 0U) ||
-            (ultrasonic_object.detected != 0U)) {
-            is_running = 0U;
-            is_rotating = 0U;
-        }
-
-        if (is_running != 0U)
-            Kobuki_Drive(100);
-        else if (is_rotating != 0U)
-            Kobuki_Rotate(100);
-        else
-            Send_Kobuki_Move(0, 0);
     }
 }
